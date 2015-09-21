@@ -23,10 +23,10 @@ func main() {
 	flag.Parse()
 
 	ctx := usb.NewContext()
-	defer func() {
-		ctx.Close()
-		fmt.Print("libusb_exit\n")
-	}()
+	// defer func() {
+	// 	ctx.Close()
+	// 	fmt.Print("libusb_exit\n")
+	// }()
 
 	ctx.Debug(*Debug)
 
@@ -34,17 +34,15 @@ func main() {
 		if fmt.Sprintf("%s:%s", desc.Vendor, desc.Product) != *Device {
 			return false
 		}
-
 		return true
 	})
-
-	defer func() {
-		for _, dev := range devs {
-			dev.Close()
-			fmt.Print("libusb_close\n")
-		}
-
-	}()
+	// defer func() {
+	// 	for _, dev := range devs {
+	// 		dev.Close()
+	// 		fmt.Print("libusb_close\n")
+	// 	}
+	//
+	// }()
 
 	if err != nil {
 		log.Fatalf("usb.Open: %v", err)
@@ -61,14 +59,6 @@ func main() {
 		data = getDataByNumber(*Number)
 	}
 
-	// dev.DetachKernelDriver(0)
-
-	// len, err := dev.Control(0x01, 0x0B, 0, 0, data)
-	// if err != nil {
-	// 	log.Fatalf("control device faild: %s", err)
-	// }
-	// fmt.Printf("wrote %vbyte\n", len)
-
 	ep, err := devs[0].OpenEndpoint(uint8(1), uint8(0), uint8(0), uint8(1)|uint8(usb.ENDPOINT_DIR_OUT))
 	if err != nil {
 		log.Fatalf("open device faild: %s", err)
@@ -76,13 +66,17 @@ func main() {
 
 	transfer(ep, data)
 
-	// _ = transfer(devs[0], data)
+	devs[0].Close()
+	ctx.Close()
 }
 
 func transfer(ep usb.Endpoint, ir_data []byte) {
 	var (
-		buf                                          []byte = make([]byte, MAX_SIZE, MAX_SIZE)
-		send_bit_num, send_bit_pos, set_bit_size, fi int    = 0, 0, 0, 0
+		buf          []byte = make([]byte, MAX_SIZE, MAX_SIZE)
+		send_bit_num int    = 0
+		send_bit_pos int    = 0
+		set_bit_size int    = 0
+		fi           int    = 0
 	)
 
 	send_bit_num = len(ir_data) / 4
@@ -122,17 +116,12 @@ func transfer(ep usb.Endpoint, ir_data []byte) {
 				send_bit_pos++
 			}
 
-			len, err := ep.Write(buf)
+			_, err := ep.Write(buf)
 			if err != nil {
 				log.Fatalf("control faild: %v", err)
 			}
 
-			// len, err := ep.Control(0x01, 0x0B, 0, 0, buf)
-			// if err != nil {
-			// 	log.Fatalf("control faild: %v", err)
-			// }
-
-			fmt.Printf("wrote %vbyte\n", len)
+			// fmt.Printf("wrote %vbyte\n", len)
 		} else {
 			break
 		}
@@ -162,8 +151,100 @@ func getDataByKey(key string) []byte {
 	return list[key]
 }
 
-func getDataByNumber(number int) []byte {
-	return []byte{0xff, 0xff, 0xff, 0xff}
+func getDataByNumber(code_no int) []byte {
+	var (
+		code_size       int    = 0
+		c_need_data_len int    = 1224
+		buff_set_pos    int    = 0
+		set_data_count  int    = 0
+		fi              int    = 0
+		fj              int    = 0
+		fk              int    = 0
+		data_pos        int    = 0
+		buff_size       int    = 1304
+		buff            []byte = make([]byte, buff_size, buff_size)
+	)
+
+	code := [][]byte{
+		{0xD1, 0x2D, 0x08, 0xF7},
+		{0xD1, 0x2D, 0x00, 0x00},
+		{0xD1, 0x2D, 0x00, 0x00},
+		{0xD1, 0x2D, 0x00, 0x00},
+		{0xD1, 0x2D, 0x00, 0x00},
+		{0xD1, 0x2D, 0x3C, 0xC3},
+		{0xD1, 0x2D, 0x00, 0x00},
+		{0xD1, 0x2D, 0x00, 0x00},
+		{0xD1, 0x2D, 0x09, 0xF6},
+	}
+
+	c_reader_code := []byte{0x01, 0x56, 0x00, 0xAB}
+	c_off_code := []byte{0x00, 0x15, 0x00, 0x15}
+	c_on_code := []byte{0x00, 0x15, 0x00, 0x40}
+	c_end_code := []byte{0x00, 0x15, 0x08, 0xFD}
+
+	code[1][2] = byte(((code_no % 1000000) / 100000) + 0x30)
+	code[1][3] = byte(code[1][2] & 0xFF)
+	code[2][2] = byte(((code_no % 100000) / 10000) + 0x30)
+	code[2][3] = byte(code[2][2] & 0xFF)
+	code[3][2] = byte(((code_no % 10000) / 1000) + 0x30)
+	code[3][3] = byte(code[3][2] & 0xFF)
+	code[4][2] = byte(((code_no % 1000) / 100) + 0x30)
+	code[4][3] = byte(code[4][2] & 0xFF)
+	code[6][2] = byte(((code_no % 100) / 10) + 0x30)
+	code[6][3] = byte(code[6][2] & 0xFF)
+	code[7][2] = byte((code_no % 10) + 0x30)
+	code[7][3] = byte(code[7][2] & 0xFF)
+
+	if c_need_data_len <= buff_size {
+		for fi = 0; fi < len(code); fi++ {
+			for data_pos = 0; data_pos < len(c_reader_code); data_pos++ {
+
+				// fmt.Printf("%v\n", buff_set_pos)
+				buff[buff_set_pos] = c_reader_code[data_pos]
+				buff_set_pos++
+				set_data_count++
+			}
+			for fj = 0; fj < len(code[0]); fj++ {
+				for fk = 0; fk < 8; fk++ {
+					if ((code[fi][fj] >> byte(fk)) & 0x01) == 1 {
+						for data_pos = 0; data_pos < len(c_on_code); data_pos++ {
+
+							// fmt.Printf("%v\n", buff_set_pos)
+							buff[buff_set_pos] = c_on_code[data_pos]
+							buff_set_pos++
+							set_data_count++
+						}
+					} else {
+						for data_pos = 0; data_pos < len(c_off_code); data_pos++ {
+
+							// fmt.Printf("%v\n", buff_set_pos)
+							buff[buff_set_pos] = c_off_code[data_pos]
+							buff_set_pos++
+							set_data_count++
+						}
+					}
+				}
+			}
+			for data_pos = 0; data_pos < len(c_end_code); data_pos++ {
+
+				// fmt.Printf("%v\n", buff_set_pos)
+				buff[buff_set_pos] = c_end_code[data_pos]
+				buff_set_pos++
+				set_data_count++
+			}
+		}
+		if set_data_count == c_need_data_len {
+			code_size = c_need_data_len
+		} else {
+			code_size = 0
+		}
+	} else {
+		code_size = 0
+	}
+
+	_ = code_size
+
+	return buff
 }
 
 func getKeyList() map[string][]byte {
