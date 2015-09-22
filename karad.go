@@ -11,6 +11,8 @@ import (
 const MAX_SIZE = 64
 const IR_FREQ = 38000
 const IR_SEND_DATA_USB_SEND_MAX_LEN = 14
+const C_NEED_DATA_LEN = 1224
+const BUFF_SIZE = 1304
 
 var (
 	Device = flag.String("device", "22ea:0039", "select device. default \"22ea:0039\" ")
@@ -25,7 +27,6 @@ func main() {
 	ctx := usb.NewContext()
 	// defer func() {
 	// 	ctx.Close()
-	// 	fmt.Print("libusb_exit\n")
 	// }()
 
 	ctx.Debug(*Debug)
@@ -39,7 +40,6 @@ func main() {
 	// defer func() {
 	// 	for _, dev := range devs {
 	// 		dev.Close()
-	// 		fmt.Print("libusb_close\n")
 	// 	}
 	//
 	// }()
@@ -52,11 +52,12 @@ func main() {
 		log.Fatal("not device.")
 	}
 
-	var data []byte
+	var ir_data []byte
+	var ir_data_size int
 	if *Key != "none" {
-		data = getDataByKey(*Key)
+		ir_data, ir_data_size = getDataByKey(*Key)
 	} else {
-		data = getDataByNumber(*Number)
+		ir_data, ir_data_size = getDataByNumber(*Number)
 	}
 
 	ep, err := devs[0].OpenEndpoint(uint8(1), uint8(0), uint8(0), uint8(1)|uint8(usb.ENDPOINT_DIR_OUT))
@@ -64,13 +65,13 @@ func main() {
 		log.Fatalf("open device faild: %s", err)
 	}
 
-	transfer(ep, data)
+	transfer(ep, ir_data, ir_data_size)
 
 	devs[0].Close()
 	ctx.Close()
 }
 
-func transfer(ep usb.Endpoint, ir_data []byte) {
+func transfer(ep usb.Endpoint, ir_data []byte, ir_data_size int) {
 	var (
 		buf          []byte = make([]byte, MAX_SIZE, MAX_SIZE)
 		send_bit_num int    = 0
@@ -79,13 +80,11 @@ func transfer(ep usb.Endpoint, ir_data []byte) {
 		fi           int    = 0
 	)
 
-	send_bit_num = len(ir_data) / 4
+	send_bit_num = ir_data_size / 4
 
-	for v := 0; ; {
-		v++
+	for {
 		buf = make([]byte, MAX_SIZE, MAX_SIZE)
-
-		for i := range buf {
+		for i, _ := range buf {
 			buf[i] = 0xFF
 		}
 
@@ -107,7 +106,6 @@ func transfer(ep usb.Endpoint, ir_data []byte) {
 		buf[5] = byte(set_bit_size & 0xFF)
 
 		if set_bit_size > 0 {
-			fi = 0
 			for fi = 0; fi < set_bit_size; fi++ {
 				buf[6+(fi*4)] = ir_data[send_bit_pos*4]
 				buf[6+(fi*4)+1] = ir_data[(send_bit_pos*4)+1]
@@ -120,16 +118,13 @@ func transfer(ep usb.Endpoint, ir_data []byte) {
 			if err != nil {
 				log.Fatalf("control faild: %v", err)
 			}
-
-			// fmt.Printf("wrote %vbyte\n", len)
 		} else {
 			break
 		}
 	}
 
 	buf = make([]byte, MAX_SIZE, MAX_SIZE)
-
-	for i := range buf {
+	for i, _ := range buf {
 		buf[i] = 0xFF
 	}
 
@@ -146,22 +141,22 @@ func transfer(ep usb.Endpoint, ir_data []byte) {
 
 }
 
-func getDataByKey(key string) []byte {
+func getDataByKey(key string) ([]byte, int) {
 	list := getKeyList()
-	return list[key]
+	return list[key], len(list[key])
 }
 
-func getDataByNumber(code_no int) []byte {
+func getDataByNumber(code_no int) ([]byte, int) {
 	var (
 		code_size       int    = 0
-		c_need_data_len int    = 1224
 		buff_set_pos    int    = 0
 		set_data_count  int    = 0
 		fi              int    = 0
 		fj              int    = 0
 		fk              int    = 0
 		data_pos        int    = 0
-		buff_size       int    = 1304
+		buff_size       int    = BUFF_SIZE
+		c_need_data_len int    = C_NEED_DATA_LEN
 		buff            []byte = make([]byte, buff_size, buff_size)
 	)
 
@@ -183,23 +178,21 @@ func getDataByNumber(code_no int) []byte {
 	c_end_code := []byte{0x00, 0x15, 0x08, 0xFD}
 
 	code[1][2] = byte(((code_no % 1000000) / 100000) + 0x30)
-	code[1][3] = byte(code[1][2] & 0xFF)
+	code[1][3] = byte(^code[1][2] & 0xFF)
 	code[2][2] = byte(((code_no % 100000) / 10000) + 0x30)
-	code[2][3] = byte(code[2][2] & 0xFF)
+	code[2][3] = byte(^code[2][2] & 0xFF)
 	code[3][2] = byte(((code_no % 10000) / 1000) + 0x30)
-	code[3][3] = byte(code[3][2] & 0xFF)
+	code[3][3] = byte(^code[3][2] & 0xFF)
 	code[4][2] = byte(((code_no % 1000) / 100) + 0x30)
-	code[4][3] = byte(code[4][2] & 0xFF)
+	code[4][3] = byte(^code[4][2] & 0xFF)
 	code[6][2] = byte(((code_no % 100) / 10) + 0x30)
-	code[6][3] = byte(code[6][2] & 0xFF)
+	code[6][3] = byte(^code[6][2] & 0xFF)
 	code[7][2] = byte((code_no % 10) + 0x30)
-	code[7][3] = byte(code[7][2] & 0xFF)
+	code[7][3] = byte(^code[7][2] & 0xFF)
 
 	if c_need_data_len <= buff_size {
 		for fi = 0; fi < len(code); fi++ {
 			for data_pos = 0; data_pos < len(c_reader_code); data_pos++ {
-
-				// fmt.Printf("%v\n", buff_set_pos)
 				buff[buff_set_pos] = c_reader_code[data_pos]
 				buff_set_pos++
 				set_data_count++
@@ -208,16 +201,12 @@ func getDataByNumber(code_no int) []byte {
 				for fk = 0; fk < 8; fk++ {
 					if ((code[fi][fj] >> byte(fk)) & 0x01) == 1 {
 						for data_pos = 0; data_pos < len(c_on_code); data_pos++ {
-
-							// fmt.Printf("%v\n", buff_set_pos)
 							buff[buff_set_pos] = c_on_code[data_pos]
 							buff_set_pos++
 							set_data_count++
 						}
 					} else {
 						for data_pos = 0; data_pos < len(c_off_code); data_pos++ {
-
-							// fmt.Printf("%v\n", buff_set_pos)
 							buff[buff_set_pos] = c_off_code[data_pos]
 							buff_set_pos++
 							set_data_count++
@@ -226,8 +215,6 @@ func getDataByNumber(code_no int) []byte {
 				}
 			}
 			for data_pos = 0; data_pos < len(c_end_code); data_pos++ {
-
-				// fmt.Printf("%v\n", buff_set_pos)
 				buff[buff_set_pos] = c_end_code[data_pos]
 				buff_set_pos++
 				set_data_count++
@@ -242,9 +229,7 @@ func getDataByNumber(code_no int) []byte {
 		code_size = 0
 	}
 
-	_ = code_size
-
-	return buff
+	return buff, code_size
 }
 
 func getKeyList() map[string][]byte {
